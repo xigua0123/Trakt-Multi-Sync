@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Trakt Multi Sync 多账号双向同步管理台</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 0; background: #f4f6f9; color: #333; }
+  
+  /* 顶部蓝条样式 */
+  .top-banner { background: #1a73e8; color: #fff; padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+  .banner-title { font-size: 18px; font-weight: 500; letter-spacing: 0.5px; }
+  .logout-btn { background: rgba(255,255,255,0.2); color: #fff; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  .logout-btn:hover { background: rgba(255,255,255,0.3); }
+
+  /* 页面主体包装 */
+  .main-container { max-width: 1100px; margin: 20px auto; padding: 0 15px; }
+
+  /* 标签页导航栏 */
+  .tabs { display: flex; gap: 8px; margin-bottom: 20px; background: #fff; padding: 10px 15px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+  .tab-btn { padding: 8px 18px; border: 1px solid #dcdcdc; background: #fff; cursor: pointer; font-size: 14px; border-radius: 4px; font-weight: 500; color: #333; }
+  .tab-btn.active { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+
+  /* 内容面板卡片 */
+  .panel { display: none; background: #fff; padding: 25px; border-radius: 6px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.04); margin-bottom: 20px; }
+  .panel.active { display: block; }
+  
+  h3 { margin-top: 0; font-size: 16px; color: #222; border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 20px; }
+
+  /* 双列网格布局 */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .form-group { margin-bottom: 15px; }
+  .form-group.full { grid-column: span 2; }
+  
+  label { display: block; margin-bottom: 6px; font-weight: 500; font-size: 13px; color: #444; }
+  input[type="text"], input[type="number"], input[type="password"], select { width: 100%; padding: 9px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; background: #fff; box-sizing: border-box; }
+  input:focus, select:focus { border-color: #1a73e8; outline: none; }
+
+  /* 同步选项复选框排布 */
+  .checkbox-group { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 8px; }
+  .checkbox-group label { display: flex; align-items: center; font-weight: normal; font-size: 14px; cursor: pointer; color: #333; }
+  .checkbox-group input { margin-right: 6px; width: 16px; height: 16px; }
+
+  button.primary { background: #1a73e8; color: #fff; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 500; }
+  button.primary:hover { background: #1557b0; }
+  button.danger { background: #d93025; color: #fff; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  
+  table { width: 100%; border-collapse: collapse; margin-top: 5px; margin-bottom: 15px; }
+  th, td { border-bottom: 1px solid #eee; padding: 12px 10px; text-align: left; font-size: 13px; }
+  th { background: #fafafa; color: #555; font-weight: 600; }
+  
+  pre { background: #1e1e1e; color: #00ff00; padding: 15px; border-radius: 6px; height: 320px; overflow-y: auto; font-size: 12px; margin-top: 10px; }
+  
+  .status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #ccc; margin-right: 6px; }
+  .status-dot.running { background: #34a853; animation: pulse 1.5s infinite; }
+  .status-dot.idle { background: #fbbc04; }
+  @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+  
+  .modal-box { border: 2px dashed #1a73e8; background: #f0f4fa; padding: 15px; border-radius: 6px; margin-top: 15px; display: none; }
+  .pin-display { font-size: 26px; font-weight: bold; color: #1a73e8; letter-spacing: 3px; margin: 10px 0; }
+
+  /* 登录遮罩样式 */
+  #loginOverlay {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: #f4f6f9; display: flex; justify-content: center; align-items: center; z-index: 9999;
+  }
+  .login-card {
+    text-align: center; width: 100%; max-width: 420px; padding: 20px; background: #fff; border-radius: 8px; border: 1px solid #e2e8f0; box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+  }
+  .login-card h2 { font-size: 26px; color: #111; margin-top: 10px; margin-bottom: 6px; font-weight: 600; }
+  .login-card p { color: #666; font-size: 14px; margin-bottom: 25px; }
+  .login-card input { width: 100%; padding: 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; margin-bottom: 15px; box-sizing: border-box; }
+  .login-card button { width: 100%; padding: 12px; background: #1a73e8; color: #fff; border: none; border-radius: 4px; font-size: 15px; cursor: pointer; font-weight: 500; }
+  .login-card button:hover { background: #1557b0; }
+  .error-msg { color: #d93025; font-size: 13px; margin-bottom: 12px; display: none; }
+</style>
+</head>
+<body>
+
+<!-- 登录遮罩 -->
+<div id="loginOverlay" style="display:none;">
+  <div class="login-card">
+    <h2>Trakt Multi Sync</h2>
+    <p>默认密码 admin，请登录后修改</p>
+    <div id="loginError" class="error-msg">密码错误，请重试</div>
+    <input type="password" id="loginPwd" placeholder="输入密码" onkeydown="if(event.key==='Enter') doLogin()">
+    <button onclick="doLogin()">登录</button>
+  </div>
+</div>
+
+<!-- 顶部蓝条 -->
+<div class="top-banner">
+  <div class="banner-title">Trakt Multi Sync 多账号双向同步管理台</div>
+  <button class="logout-btn" onclick="doLogout()">退出登录</button>
+</div>
+
+<div class="main-container">
+  <!-- 导航标签页 -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab(0)">账号管理</button>
+    <button class="tab-btn" onclick="switchTab(1)">同步配置</button>
+    <button class="tab-btn" onclick="switchTab(2)">同步与日志</button>
+  </div>
+
+  <!-- Tab 1: 账号管理 -->
+  <div class="panel active">
+    <h3>已授权账号</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>备注名</th>
+          <th>Client ID</th>
+          <th>Token 状态</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="accTableBody">
+        <tr><td colspan="4" style="text-align:center; color:#888;">加载中...</td></tr>
+      </tbody>
+    </table>
+    <div style="font-size: 12px; color: #666; margin-bottom: 30px;">
+      提示: 在 <a href="https://trakt.tv/oauth/applications" target="_blank" style="color: #1a73e8;">Trakt Applications</a> 为每个账号创建一个 App，Redirect URI 填 <code>urn:ietf:params:oauth:2.0:oob</code> 或 <code>http://localhost:8080</code>
+    </div>
+
+    <h3>添加 / 重新授权账号</h3>
+    <div class="grid-2">
+      <div class="form-group">
+        <label>备注名 (如 main / backup1)</label>
+        <input type="text" id="remark" placeholder="例如 main 或 1111">
+      </div>
+      <div class="form-group">
+        <label>Client ID</label>
+        <input type="text" id="cid" placeholder="trakt client id">
+      </div>
+      <div class="form-group full">
+        <label>Client Secret (新 App PKCE 模式可留空)</label>
+        <input type="text" id="csec" placeholder="trakt client secret">
+      </div>
+    </div>
+    <button class="primary" onclick="startAuth()">生成 PIN 码开始授权</button>
+
+    <div id="pinModal" class="modal-box">
+      <div>请打开 <a id="verifyUrl" href="https://trakt.tv/activate" target="_blank">https://trakt.tv/activate</a> 并输入下方授权码：</div>
+      <div class="pin-display" id="userCode">----</div>
+      <div id="pollStatus" style="color: #666; font-size: 13px;">等待授权确认...</div>
+      <button class="danger" style="margin-top: 10px;" onclick="cancelAuth()">取消授权</button>
+    </div>
+  </div>
+
+  <!-- Tab 2: 同步配置 -->
+  <div class="panel">
+    <h3>同步配置</h3>
+    <div class="grid-2">
+      <div class="form-group">
+        <label>主账号选择 (Master Account)</label>
+        <select id="cfgMasterSelect" onchange="renderConfigAccountSelectors()">
+          <option value="">-- 请先添加授权账号 --</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>自动同步间隔 (秒)</label>
+        <input type="number" id="cfgInterval" placeholder="1800">
+      </div>
+      <div class="form-group full">
+        <label>从账号勾选 (Slave Accounts - 自动过滤已选主账号)</label>
+        <div id="cfgSlaveCheckboxes" class="checkbox-group" style="border: 1px solid #ccc; padding: 10px; border-radius: 4px; max-height: 120px; overflow-y: auto; background: #fff;">
+          <span style="color:#888; font-size:13px;">暂无其他可选账号</span>
+        </div>
+      </div>
+      <div class="form-group full">
+        <label>同步内容选项</label>
+        <div class="checkbox-group">
+          <label><input type="checkbox" id="cfgWatched"> 同步观看历史 (Watched)</label>
+          <label><input type="checkbox" id="cfgRatings"> 同步评分 (Ratings)</label>
+          <label><input type="checkbox" id="cfgWatchlist"> 同步追剧清单 (Watchlist)</label>
+          <label><input type="checkbox" id="cfgCollection"> 同步收藏 (Collection)</label>
+          <label><input type="checkbox" id="cfgLists"> 同步自定义片单 (Lists)</label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>请求限速延迟 (秒)</label>
+        <input type="number" step="0.1" id="cfgSleep" placeholder="0.5">
+      </div>
+      <div class="form-group">
+        <label>管理后台 Token (密码)</label>
+        <input type="text" id="cfgToken" placeholder="admin">
+      </div>
+    </div>
+    <button class="primary" style="margin-top: 10px;" onclick="saveConfig()">保存配置</button>
+  </div>
+
+  <!-- Tab 3: 同步与日志 -->
+  <div class="panel">
+    <h3>同步与日志</h3>
+    <div class="form-group" style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px;">
+      <button class="primary" id="btnRunSync" onclick="triggerSync()">立即执行一轮同步</button>
+      <div><span id="statusDot" class="status-dot idle"></span><span id="statusText">空闲</span></div>
+    </div>
+    <pre id="logPre">正在加载日志...</pre>
+  </div>
+</div>
+
+<script>
+let pollTimer = null;
+let currentDeviceCode = null;
+let lastLogCount = 0;
+let globalConfigCache = {};
+let availableAccounts = [];
+
+async function checkAuth() {
+  try {
+    const r = await fetch('/api/me');
+    if (!r.ok) {
+      document.getElementById('loginOverlay').style.display = 'flex';
+    } else {
+      document.getElementById('loginOverlay').style.display = 'none';
+      initApp();
+    }
+  } catch(e) {
+    document.getElementById('loginOverlay').style.display = 'flex';
+  }
+}
+
+async function doLogin() {
+  const pwd = document.getElementById('loginPwd').value;
+  const errDiv = document.getElementById('loginError');
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: pwd})
+    });
+    const j = await r.json();
+    if (j.ok) {
+      errDiv.style.display = 'none';
+      document.getElementById('loginOverlay').style.display = 'none';
+      document.getElementById('loginPwd').value = '';
+      initApp();
+    } else {
+      errDiv.style.display = 'block';
+    }
+  } catch(e) {
+    errDiv.style.display = 'block';
+  }
+}
+
+async function doLogout() {
+  await fetch('/api/logout', {method: 'POST'});
+  location.reload();
+}
+
+function switchTab(idx) {
+  const tabs = document.querySelectorAll('.tab-btn');
+  const panels = document.querySelectorAll('.panel');
+  tabs.forEach((t, i) => t.classList.toggle('active', i === idx));
+  panels.forEach((p, i) => p.classList.toggle('active', i === idx));
+}
+
+async function loadAccounts() {
+  try {
+    const r = await fetch('/api/list_accounts');
+    if (r.status === 401) { checkAuth(); return; }
+    const j = await r.json();
+    availableAccounts = j.accounts || [];
+    
+    const tbody = document.getElementById('accTableBody');
+    if (availableAccounts.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:#888;">暂无已授权账号</td></tr>';
+    } else {
+      tbody.innerHTML = availableAccounts.map(a => `
+        <tr>
+          <td><b>${a.remark}</b></td>
+          <td><code>${a.client_id}</code></td>
+          <td><span style="color:${a.expired?'red':'green'}">${a.expired?'已过期':'正常'}</span></td>
+          <td><button class="danger" onclick="delAccount('${a.remark}')">删除</button></td>
+        </tr>
+      `).join('');
+    }
+    
+    renderConfigAccountSelectors();
+  } catch(e) {}
+}
+
+function renderConfigAccountSelectors() {
+  const masterSelect = document.getElementById('cfgMasterSelect');
+  const slaveContainer = document.getElementById('cfgSlaveCheckboxes');
+  
+  if (availableAccounts.length === 0) {
+    masterSelect.innerHTML = '<option value="">-- 请先添加授权账号 --</option>';
+    slaveContainer.innerHTML = '<span style="color:#888; font-size:13px;">暂无其他可选账号</span>';
+    return;
+  }
+
+  let currentMaster = masterSelect.value;
+  if (!currentMaster && globalConfigCache.master_account) {
+    currentMaster = globalConfigCache.master_account;
+  }
+  if (!currentMaster && availableAccounts.length > 0) {
+    currentMaster = availableAccounts[0].remark;
+  }
+
+  const currentSlaves = Array.isArray(globalConfigCache.slave_accounts) 
+    ? globalConfigCache.slave_accounts 
+    : (globalConfigCache.slave_accounts ? [globalConfigCache.slave_accounts] : []);
+
+  masterSelect.innerHTML = availableAccounts.map(a => 
+    `<option value="${a.remark}" ${a.remark === currentMaster ? 'selected' : ''}>${a.remark}</option>`
+  ).join('');
+
+  const selectedMaster = masterSelect.value;
+  const validSlaves = availableAccounts.filter(a => a.remark !== selectedMaster);
+  
+  if (validSlaves.length === 0) {
+    slaveContainer.innerHTML = '<span style="color:#888; font-size:13px;">暂无其他可选从账号（主账号已占用全部账号）</span>';
+    return;
+  }
+
+  slaveContainer.innerHTML = validSlaves.map(a => {
+    const checked = currentSlaves.includes(a.remark) ? 'checked' : '';
+    return `<label><input type="checkbox" name="slave_account_cb" value="${a.remark}" ${checked}> ${a.remark}</label>`;
+  }).join('');
+}
+
+async function startAuth() {
+  const remark = document.getElementById('remark').value.trim();
+  const client_id = document.getElementById('cid').value.trim();
+  const client_secret = document.getElementById('csec').value.trim();
+  if(!remark || !client_id) {
+    alert("请填写备注名和 Client ID！");
+    return;
+  }
+
+  const fd = new FormData();
+  fd.append("remark", remark);
+  fd.append("client_id", client_id);
+  fd.append("client_secret", client_secret);
+
+  const r = await fetch('/api/oauth/device/start', {method: 'POST', body: fd});
+  if (r.status === 401) { checkAuth(); return; }
+  const j = await r.json();
+  if(j.ok) {
+    currentDeviceCode = j.device_code;
+    document.getElementById('userCode').innerText = j.user_code;
+    document.getElementById('verifyUrl').href = j.verification_url || "https://trakt.tv/activate";
+    document.getElementById('pinModal').style.display = 'block';
+    document.getElementById('pollStatus').innerText = "等待在浏览器中确认授权...";
+
+    if(pollTimer) clearInterval(pollTimer);
+    const interval = (j.interval || 5) * 1000;
+    pollTimer = setInterval(pollToken, interval);
+  } else {
+    alert("发起授权失败: " + (j.msg || "未知错误"));
+  }
+}
+
+async function pollToken() {
+  if(!currentDeviceCode) return;
+  try {
+    const r = await fetch(`/api/oauth/device/poll?device_code=${encodeURIComponent(currentDeviceCode)}`);
+    if (r.status === 401) { checkAuth(); return; }
+    const j = await r.json();
+    if(j.status === "authorized") {
+      clearInterval(pollTimer);
+      pollTimer = null;
+      currentDeviceCode = null;
+      document.getElementById('pinModal').style.display = 'none';
+      alert(`账号 [${j.remark}] 授权成功！`);
+      loadAccounts();
+    } else if(j.status === "expired" || j.status === "cancelled") {
+      clearInterval(pollTimer);
+      pollTimer = null;
+      currentDeviceCode = null;
+      document.getElementById('pinModal').style.display = 'none';
+      alert("授权已过期或取消");
+    }
+  } catch(e) {}
+}
+
+function cancelAuth() {
+  if(pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+  currentDeviceCode = null;
+  document.getElementById('pinModal').style.display = 'none';
+}
+
+async function delAccount(remark) {
+  if(!confirm(`确定删除账号 ${remark} 吗？`)) return;
+  const fd = new FormData();
+  fd.append("remark", remark);
+  const r = await fetch('/api/del_account', {method: 'POST', body: fd});
+  if (r.status === 401) { checkAuth(); return; }
+  loadAccounts();
+}
+
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/config');
+    if (r.status === 401) { checkAuth(); return; }
+    const j = await r.json();
+    globalConfigCache = j;
+    
+    renderConfigAccountSelectors();
+
+    document.getElementById('cfgWatched').checked = !!j.sync_watched;
+    document.getElementById('cfgRatings').checked = !!j.sync_ratings;
+    document.getElementById('cfgWatchlist').checked = !!j.sync_watchlist;
+    document.getElementById('cfgCollection').checked = !!j.sync_collection;
+    document.getElementById('cfgLists').checked = !!j.sync_lists;
+    document.getElementById('cfgInterval').value = j.sync_interval || 1800;
+    document.getElementById('cfgSleep').value = j.request_sleep || 0.5;
+    document.getElementById('cfgToken').value = j.admin_token || 'admin';
+  } catch(e) {}
+}
+
+async function saveConfig() {
+  try {
+    const slaveCheckboxes = document.querySelectorAll('input[name="slave_account_cb"]:checked');
+    const slave_accounts = Array.from(slaveCheckboxes).map(cb => cb.value);
+
+    const newCfg = {
+      ...globalConfigCache,
+      master_account: document.getElementById('cfgMasterSelect').value,
+      slave_accounts: slave_accounts,
+      sync_watched: document.getElementById('cfgWatched').checked,
+      sync_ratings: document.getElementById('cfgRatings').checked,
+      sync_watchlist: document.getElementById('cfgWatchlist').checked,
+      sync_collection: document.getElementById('cfgCollection').checked,
+      sync_lists: document.getElementById('cfgLists').checked,
+      sync_interval: parseInt(document.getElementById('cfgInterval').value) || 1800,
+      request_sleep: parseFloat(document.getElementById('cfgSleep').value) || 0.5,
+      admin_token: document.getElementById('cfgToken').value.trim()
+    };
+
+    const r = await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(newCfg)
+    });
+    if (r.status === 401) { checkAuth(); return; }
+    const j = await r.json();
+    if(j.ok) {
+      alert("配置保存成功！");
+      loadConfig();
+    } else {
+      alert("保存失败: " + j.msg);
+    }
+  } catch(e) {
+    alert("保存配置出错，请检查输入！");
+  }
+}
+
+async function triggerSync() {
+  const r = await fetch('/api/start_sync', {method: 'POST'});
+  if (r.status === 401) { checkAuth(); }
+}
+
+async function pollStatusAndLogs() {
+  try {
+    const rStatus = await fetch('/api/status');
+    if (rStatus.status === 401) { checkAuth(); return; }
+    const jStatus = await rStatus.json();
+    const dot = document.getElementById('statusDot');
+    const txt = document.getElementById('statusText');
+    const btn = document.getElementById('btnRunSync');
+    if(jStatus.running) {
+      dot.className = "status-dot running";
+      txt.innerText = "同步运行中...";
+      btn.disabled = true;
+    } else {
+      dot.className = "status-dot idle";
+      txt.innerText = "空闲";
+      btn.disabled = false;
+    }
+
+    const rLogs = await fetch(`/api/logs?since=${lastLogCount}`);
+    if (rLogs.status === 401) { checkAuth(); return; }
+    const jLogs = await rLogs.json();
+    if(jLogs.logs && jLogs.logs.length > 0) {
+      const pre = document.getElementById('logPre');
+      pre.innerText += jLogs.logs.join("\n") + "\n";
+      lastLogCount += jLogs.logs.length;
+      pre.scrollTop = pre.scrollHeight;
+    }
+  } catch(e) {}
+}
+
+function initApp() {
+  loadAccounts();
+  loadConfig();
+  if (!window.statusInterval) {
+    window.statusInterval = setInterval(pollStatusAndLogs, 2500);
+    pollStatusAndLogs();
+  }
+}
+
+checkAuth();
+</script>
+</body>
+</html>

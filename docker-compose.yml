@@ -1,0 +1,17 @@
+services:
+  trakt-sync:
+    image: xigua0123/trakt-sync:latest
+    container_name: trakt-sync
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8080:8080"
+    environment:
+      - TZ=Asia/Shanghai
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+    restart: unless-stopped
