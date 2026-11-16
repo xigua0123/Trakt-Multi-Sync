@@ -27,17 +27,14 @@ jobs:
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/trakt-sync
           tags: |
-            # 1. 匹配分支名（如 main）
-            type=ref,event=branch
+            # 1. 【已改成时间戳】生成基于构建时间的标签（格式如：20260607-153045）
+            type=date,pattern=YYYYMMDD-HHmmss
             
-            # 2. 使用 type=raw 配合 {{date}} 生成北京时间戳标签（例如：20260607-162010）
-            type=raw,value={{date 'YYYYMMDD-HHmmss' tz='Asia/Shanghai'}}
-            
-            # 3. 匹配手动打的语义化版本标签（如 v1.0.0, v1.0）
+            # 2. 匹配手动打的语义化版本标签（如 v1.0.0, v1.0）
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             
-            # 4. 保留 latest 标签
+            # 3. 保留 latest 标签
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and push
