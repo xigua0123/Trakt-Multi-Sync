@@ -8,8 +8,9 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import requests
 import sync_engine as se
+from apscheduler.schedulers.background import BackgroundScheduler
 
-app = FastAPI(title="Trakt Multi Sync", version="v1.0.1")
+app = FastAPI(title="Trakt Multi Sync", version="v2.0.1")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 DATA_DIR = Path("./data")
@@ -58,6 +59,45 @@ async def sync_task():
         se.log("===== 本轮星型双向同步成功结束 =====")
     except Exception as e:
         se.log(f"❌ 同步过程发生异常: {e}")
+
+
+def run_background_sync():
+    """后台定时触发任务的包装函数"""
+    if se.LAST_SYNC_STATUS["running"]:
+        se.log("上一轮同步仍在进行中，跳过本次定时触发。")
+        return
+    asyncio.run(sync_task())
+
+
+# ==================== 定时任务调度器初始化与管理 ====================
+scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
+
+def setup_scheduler():
+    """根据当前配置的 sync_interval 初始化或刷新后台定时任务"""
+    try:
+        cfg = se.load_config()
+        interval = int(cfg.get("sync_interval", 1800))
+    except Exception:
+        interval = 1800
+
+    job_id = "auto_sync_job"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+
+    if interval > 0:
+        scheduler.add_job(
+            run_background_sync,
+            'interval',
+            seconds=interval,
+            id=job_id,
+            replace_existing=True
+        )
+        se.log(f"后台定时同步任务已加载/更新，触发间隔: {interval} 秒")
+
+# 启动调度器
+setup_scheduler()
+scheduler.start()
+# =========================================================================
 
 
 # ==================== 登录鉴权相关接口 ====================
@@ -132,7 +172,7 @@ async def api_oauth_device_start(remark: str = Form(...), client_id: str = Form(
     headers_base = {
         "trakt-api-version": "2",
         "trakt-api-key": client_id,
-        "User-Agent": "Trakt Multi Sync/v1.0.1"
+        "User-Agent": "Trakt Multi Sync/v2.0.1"
     }
     dev_payload = {"client_id": client_id}
     if client_secret:
@@ -197,7 +237,7 @@ async def api_oauth_device_poll(device_code: str):
         "Content-Type": "application/json",
         "trakt-api-version": "2",
         "trakt-api-key": client_id,
-        "User-Agent": "Trakt Multi Sync/v1.0.1"
+        "User-Agent": "Trakt Multi Sync/v2.0.1"
     }
 
     try:
@@ -211,7 +251,6 @@ async def api_oauth_device_poll(device_code: str):
         se.log(f"轮询网络请求异常: {e}")
         return JSONResponse({"status": "pending"})
 
-    # 打印详细的返回状态与内容，方便排查
     code = pr.status_code
     text = pr.text.strip()
     
@@ -241,7 +280,6 @@ async def api_oauth_device_poll(device_code: str):
     
     err = err_json.get("error")
     
-    # 打印非 pending 的其他状态，帮助精确定位
     if err and err != "authorization_pending":
         se.log(f"⚠️ 轮询状态响应 [{code}] error={err}, full_resp={text}")
 
@@ -296,7 +334,11 @@ async def api_set_config(request: Request):
         cfg = se.load_config()
         cfg.update(body)
         se.save_config(cfg)
-        se.log("同步配置已更新")
+        
+        # 【核心新增】当用户在后台修改并保存配置时，立刻动态重置 APScheduler 定时任务间隔
+        setup_scheduler()
+        
+        se.log("同步配置已更新并成功刷新定时任务")
         return JSONResponse({"ok": True})
     except Exception as e:
         return JSONResponse({"ok": False, "msg": str(e)}, status_code=400)

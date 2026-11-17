@@ -174,6 +174,10 @@
           <label><input type="checkbox" id="cfgWatchlist"> 同步追剧清单 (Watchlist)</label>
           <label><input type="checkbox" id="cfgCollection"> 同步收藏 (Collection)</label>
           <label><input type="checkbox" id="cfgLists"> 同步自定义片单 (Lists)</label>
+          <!-- 【新增的 3 项同步选项】 -->
+          <label><input type="checkbox" id="cfgPlayback"> 同步播放进度 (Playback)</label>
+          <label><input type="checkbox" id="cfgHidden"> 同步隐藏项目 (Hidden)</label>
+          <label><input type="checkbox" id="cfgLikes"> 同步点赞片单 (Likes)</label>
         </div>
       </div>
       <div class="form-group">
@@ -405,6 +409,11 @@ async function loadConfig() {
     document.getElementById('cfgWatchlist').checked = !!j.sync_watchlist;
     document.getElementById('cfgCollection').checked = !!j.sync_collection;
     document.getElementById('cfgLists').checked = !!j.sync_lists;
+    // 【加载新增的 3 项】
+    document.getElementById('cfgPlayback').checked = !!j.sync_playback;
+    document.getElementById('cfgHidden').checked = !!j.sync_hidden;
+    document.getElementById('cfgLikes').checked = !!j.sync_likes;
+
     document.getElementById('cfgInterval').value = j.sync_interval || 1800;
     document.getElementById('cfgSleep').value = j.request_sleep || 0.5;
     document.getElementById('cfgToken').value = j.admin_token || 'admin';
@@ -425,6 +434,11 @@ async function saveConfig() {
       sync_watchlist: document.getElementById('cfgWatchlist').checked,
       sync_collection: document.getElementById('cfgCollection').checked,
       sync_lists: document.getElementById('cfgLists').checked,
+      // 【保存新增的 3 项】
+      sync_playback: document.getElementById('cfgPlayback').checked,
+      sync_hidden: document.getElementById('cfgHidden').checked,
+      sync_likes: document.getElementById('cfgLikes').checked,
+
       sync_interval: parseInt(document.getElementById('cfgInterval').value) || 1800,
       request_sleep: parseFloat(document.getElementById('cfgSleep').value) || 0.5,
       admin_token: document.getElementById('cfgToken').value.trim()
