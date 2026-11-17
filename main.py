@@ -10,7 +10,7 @@ import requests
 import sync_engine as se
 from apscheduler.schedulers.background import BackgroundScheduler
 
-app = FastAPI(title="Trakt Multi Sync", version="v2.0.2")
+app = FastAPI(title="Trakt Multi Sync", version="v2.0.3")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 DATA_DIR = Path("./data")
@@ -172,7 +172,7 @@ async def api_oauth_device_start(remark: str = Form(...), client_id: str = Form(
     headers_base = {
         "trakt-api-version": "2",
         "trakt-api-key": client_id,
-        "User-Agent": "Trakt Multi Sync/v2.0.2"
+        "User-Agent": "Trakt Multi Sync/v2.0.3"
     }
     dev_payload = {"client_id": client_id}
     if client_secret:
@@ -237,7 +237,7 @@ async def api_oauth_device_poll(device_code: str):
         "Content-Type": "application/json",
         "trakt-api-version": "2",
         "trakt-api-key": client_id,
-        "User-Agent": "Trakt Multi Sync/v2.0.2"
+        "User-Agent": "Trakt Multi Sync/v2.0.3"
     }
 
     try:
