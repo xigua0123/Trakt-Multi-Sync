@@ -99,6 +99,7 @@ def load_accounts():
             return raw
         return {}
     except Exception as e:
+        log(f"❌ 读取账号文件失败: {e}")
         return {}
 
 
@@ -149,11 +150,11 @@ class Trakt:
             "trakt-api-version": "2",
             "trakt-api-key": self.client_id,
             "Authorization": f"Bearer {self.access_token}",
-            "User-Agent": "Trakt-Multi-Sync/v2.0.1"
+            "User-Agent": "Trakt-Multi-Sync/v2.0.2"
         }
 
     def refresh(self):
-        log(f"[{self.name}] 刷新 access_token ...")
+        log(f"[{self.name}] 正在刷新 access_token ...")
         body = {
             "refresh_token": self.refresh_token,
             "client_id": self.client_id,
@@ -161,36 +162,47 @@ class Trakt:
         }
         if self.client_secret:
             body["client_secret"] = self.client_secret
-        r = requests.post(f"{BASE}/oauth/token", data=body, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        self.access_token = data["access_token"]
-        self.refresh_token = data["refresh_token"]
-        self.cfg["access_token"] = self.access_token
-        self.cfg["refresh_token"] = self.refresh_token
-
         try:
+            r = requests.post(f"{BASE}/oauth/token", data=body, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            self.access_token = data["access_token"]
+            self.refresh_token = data["refresh_token"]
+            self.cfg["access_token"] = self.access_token
+            self.cfg["refresh_token"] = self.refresh_token
+
             accounts = load_accounts()
             if self.name in accounts:
                 accounts[self.name]["access_token"] = self.access_token
                 accounts[self.name]["refresh_token"] = self.refresh_token
                 save_accounts(accounts)
                 log(f"[{self.name}] 刷新后的 token 已成功持久化落盘")
+        except requests.exceptions.HTTPError as he:
+            err_text = he.response.text if he.response is not None else str(he)
+            log(f"[{self.name}] ❌ 刷新 token 失败 [HTTP {he.response.status_code if he.response else 'N/A'}]: {err_text}")
+            raise
         except Exception as e:
-            log(f"[{self.name}] 持久化刷新 token 失败: {e}")
+            log(f"[{self.name}] ❌ 刷新 token 异常: {e}")
+            raise
 
     def _req(self, method, path, **kwargs):
         for attempt in range(3):
             try:
                 r = requests.request(method, f"{BASE}{path}", headers=self.headers(), timeout=60, **kwargs)
                 if r.status_code == 401 and attempt == 0:
+                    log(f"[{self.name}] 收到 401 未授权响应，尝试刷新 Token 后重试...")
                     self.refresh()
                     continue
                 if r.status_code == 429:
                     retry_after = int(r.headers.get("Retry-After", 10))
-                    log(f"[{self.name}] 触发 Trakt API 频控限制 (429)，等待 {retry_after} 秒后重试...")
+                    log(f"[{self.name}] ⚠️ 触发 Trakt API 频控限制 (429)，等待 {retry_after} 秒后重试...")
                     time.sleep(retry_after)
                     continue
+                
+                # 若遇到其他 4xx / 5xx 错误，记录详细的响应内容
+                if r.status_code >= 400:
+                    log(f"[{self.name}] ⚠️ 请求 {path} 返回错误状态码 [{r.status_code}]: {r.text}")
+                
                 r.raise_for_status()
                 if not r.text:
                     return {}
@@ -198,10 +210,18 @@ class Trakt:
             except requests.exceptions.HTTPError as he:
                 if he.response is not None and he.response.status_code == 429 and attempt < 2:
                     retry_after = int(he.response.headers.get("Retry-After", 10))
-                    log(f"[{self.name}] 触发 Trakt API 频控限制 (429)，等待 {retry_after} 秒后重试...")
+                    log(f"[{self.name}] ⚠️ 触发 429 限速，等待 {retry_after} 秒...")
                     time.sleep(retry_after)
                     continue
+                err_body = he.response.text if he.response is not None else "无响应体"
+                status_code = he.response.status_code if he.response is not None else "未知"
+                log(f"[{self.name}] ❌ HTTPError 请求 [{path}] 失败 (状态码: {status_code}): {err_body}")
                 raise
+            except Exception as e:
+                log(f"[{self.name}] ❌ 请求 [{path}] 发生网络或未知异常 (第 {attempt+1} 次尝试): {e}")
+                if attempt == 2:
+                    raise
+                time.sleep(2)
         raise RuntimeError(f"[{self.name}] 请求 {path} 达到最大重试次数仍失败")
 
     def get(self, path):
@@ -214,54 +234,89 @@ class Trakt:
 def fetch_all(t: Trakt, cfg):
     data = {}
     sleep = cfg["request_sleep"]
-    if cfg.get("sync_watched"):
-        data["watched_shows"] = t.get("/sync/watched/shows")
-        data["watched_movies"] = t.get("/sync/watched/movies")
-        time.sleep(sleep)
-    if cfg.get("sync_ratings"):
-        data["ratings_shows"] = t.get("/sync/ratings/shows")
-        data["ratings_movies"] = t.get("/sync/ratings/movies")
-        time.sleep(sleep)
-    if cfg.get("sync_watchlist"):
-        data["watchlist_shows"] = t.get("/sync/watchlist/shows")
-        data["watchlist_movies"] = t.get("/sync/watchlist/movies")
-        time.sleep(sleep)
-    if cfg.get("sync_collection"):
-        data["collection_shows"] = t.get("/sync/collection/shows")
-        data["collection_movies"] = t.get("/sync/collection/movies")
-        time.sleep(sleep)
-    if cfg.get("sync_lists"):
-        lists = t.get("/users/me/lists?extended=min")
-        time.sleep(sleep)
-        lists_data = {}
-        for lst in lists:
-            slug = lst["ids"]["slug"]
-            items = t.get(f"/users/me/lists/{slug}/items?extended=min&limit=1000")
-            lists_data[lst["name"]] = {"info": lst, "items": items}
-            time.sleep(sleep)
-        data["lists_data"] = lists_data
+    log(f"[{t.name}] 开始拉取各项云端数据...")
 
-    # 抓取播放进度 (Continue Watching / Playback Progress)
+    if cfg.get("sync_watched"):
+        try:
+            data["watched_shows"] = t.get("/sync/watched/shows")
+            data["watched_movies"] = t.get("/sync/watched/movies")
+            log(f"[{t.name}] ✓ 观看历史拉取成功 (剧集: {len(data['watched_shows'])}部, 电影: {len(data['watched_movies'])}部)")
+        except Exception as e:
+            log(f"[{t.name}] ❌ 拉取观看历史异常: {e}")
+            data["watched_shows"], data["watched_movies"] = [], []
+        time.sleep(sleep)
+
+    if cfg.get("sync_ratings"):
+        try:
+            data["ratings_shows"] = t.get("/sync/ratings/shows")
+            data["ratings_movies"] = t.get("/sync/ratings/movies")
+            log(f"[{t.name}] ✓ 评分拉取成功 (剧集: {len(data['ratings_shows'])}个, 电影: {len(data['ratings_movies'])}个)")
+        except Exception as e:
+            log(f"[{t.name}] ❌ 拉取评分异常: {e}")
+            data["ratings_shows"], data["ratings_movies"] = [], []
+        time.sleep(sleep)
+
+    if cfg.get("sync_watchlist"):
+        try:
+            data["watchlist_shows"] = t.get("/sync/watchlist/shows")
+            data["watchlist_movies"] = t.get("/sync/watchlist/movies")
+            log(f"[{t.name}] ✓ 追剧清单拉取成功 (剧集: {len(data['watchlist_shows'])}部, 电影: {len(data['watchlist_movies'])}部)")
+        except Exception as e:
+            log(f"[{t.name}] ❌ 拉取追剧清单异常: {e}")
+            data["watchlist_shows"], data["watchlist_movies"] = [], []
+        time.sleep(sleep)
+
+    if cfg.get("sync_collection"):
+        try:
+            data["collection_shows"] = t.get("/sync/collection/shows")
+            data["collection_movies"] = t.get("/sync/collection/movies")
+            log(f"[{t.name}] ✓ 收藏库拉取成功 (剧集: {len(data['collection_shows'])}部, 电影: {len(data['collection_movies'])}部)")
+        except Exception as e:
+            log(f"[{t.name}] ❌ 拉取收藏库异常: {e}")
+            data["collection_shows"], data["collection_movies"] = [], []
+        time.sleep(sleep)
+
+    if cfg.get("sync_lists"):
+        try:
+            lists = t.get("/users/me/lists?extended=min")
+            time.sleep(sleep)
+            lists_data = {}
+            for lst in lists:
+                slug = lst["ids"]["slug"]
+                items = t.get(f"/users/me/lists/{slug}/items?extended=min&limit=1000")
+                lists_data[lst["name"]] = {"info": lst, "items": items}
+                time.sleep(sleep)
+            data["lists_data"] = lists_data
+            log(f"[{t.name}] ✓ 自定义片单拉取成功 (共 {len(lists_data)} 个片单)")
+        except Exception as e:
+            log(f"[{t.name}] ❌ 拉取自定义片单异常: {e}")
+            data["lists_data"] = {}
+
+    # 播放进度
     if cfg.get("sync_playback"):
         try:
             data["playback"] = t.get("/sync/playback")
+            log(f"[{t.name}] ✓ 播放进度(继续观看)拉取成功 (共 {len(data['playback'])} 项)")
             time.sleep(sleep)
         except Exception as e:
-            log(f"[{t.name}] 获取播放进度失败: {e}")
+            log(f"[{t.name}] ❌ 获取播放进度失败: {e}")
             data["playback"] = []
 
-    # 抓取隐藏项目 (Hidden Items)
+    # 隐藏项目
     if cfg.get("sync_hidden"):
         hidden_data = {}
-        for section in ["movies", "shows", "calendar"]:
+        for section in ["movies", "shows"]:
             try:
-                hidden_data[section] = t.get(f"/users/hidden/{section}?type=show,movie")
+                res = t.get(f"/users/hidden/{section}")
+                hidden_data[section] = res if isinstance(res, list) else []
                 time.sleep(sleep)
-            except Exception:
+            except Exception as e:
+                log(f"[{t.name}] ⚠️ 获取隐藏项目 [{section}] 失败: {e}")
                 hidden_data[section] = []
         data["hidden"] = hidden_data
+        log(f"[{t.name}] ✓ 隐藏项目拉取完成")
 
-    # 抓取点赞的公共片单 (Liked Lists)
+    # 点赞片单
     if cfg.get("sync_likes"):
         try:
             liked = t.get("/users/likes/lists?extended=min")
@@ -277,10 +332,12 @@ def fetch_all(t: Trakt, cfg):
                         liked_data[list_slug] = {"info": lst, "items": items, "user": user_slug}
                         time.sleep(sleep)
             data["liked_lists"] = liked_data
+            log(f"[{t.name}] ✓ 点赞公共片单拉取成功 (共 {len(liked_data)} 个)")
         except Exception as e:
-            log(f"[{t.name}] 获取点赞片单失败: {e}")
+            log(f"[{t.name}] ❌ 获取点赞片单失败: {e}")
             data["liked_lists"] = {}
 
+    log(f"[{t.name}] 所有云端数据拉取完毕。")
     return data
 
 
@@ -392,9 +449,9 @@ def diff_lists(src_lists_data, dst_lists_data, dst_client: Trakt):
                 shows = [{"ids": x["show"]["ids"]} for x in src_items if x.get("type") == "show"]
                 if movies or shows:
                     dst_client.post(f"/users/me/lists/{new_slug}/items", {"movies": movies, "shows": shows})
-                log(f"  lists: 在 [{dst_client.name}] 创建片单《{name}》（{len(movies)} 电影 / {len(shows)} 剧集）")
+                log(f"  lists: [成功] 在 [{dst_client.name}] 创建片单《{name}》（电影: {len(movies)}个 / 剧集: {len(shows)}部）")
             except Exception as e:
-                log(f"  lists: 创建片单《{name}》失败: {e}")
+                log(f"  lists: [失败] 创建片单《{name}》异常: {e}")
         else:
             dst_lst = dst_lists_data[name]
             dst_items = dst_lst["items"]
@@ -406,12 +463,16 @@ def diff_lists(src_lists_data, dst_lists_data, dst_client: Trakt):
             shows = [{"ids": x["show"]["ids"]} for x in src_items
                      if x.get("type") == "show" and x["show"]["ids"]["trakt"] not in dst_show_ids]
             if movies or shows:
-                dst_client.post(f"/users/me/lists/{dst_slug}/items", {"movies": movies, "shows": shows})
-                log(f"  lists: [{dst_client.name}] 的《{name}》补入 {len(movies)} 电影 / {len(shows)} 剧集")
+                try:
+                    dst_client.post(f"/users/me/lists/{dst_slug}/items", {"movies": movies, "shows": shows})
+                    log(f"  lists: [成功] [{dst_client.name}] 的《{name}》补入新项（电影: {len(movies)}个 / 剧集: {len(shows)}部）")
+                except Exception as e:
+                    log(f"  lists: [失败] 往片单《{name}》补入条目异常: {e}")
 
 
-# 同步播放进度 (Playback Progress / 继续观看)
+# 播放进度双向对齐 (Continue Watching) 附带详细日志
 def sync_playback_progress(a: Trakt, b: Trakt, a_playback, b_playback):
+    log(f"  [playback] 开始对齐 [{a.name}] -> [{b.name}] 的播放进度...")
     b_items = {}
     for item in b_playback:
         ptype = item.get("type")
@@ -422,6 +483,7 @@ def sync_playback_progress(a: Trakt, b: Trakt, a_playback, b_playback):
             eid = item["episode"]["ids"]["trakt"]
             b_items[("episode", eid)] = item.get("progress", 0)
 
+    count_synced = 0
     for item in a_playback:
         ptype = item.get("type")
         progress = item.get("progress", 0)
@@ -435,9 +497,10 @@ def sync_playback_progress(a: Trakt, b: Trakt, a_playback, b_playback):
                         "movie": {"ids": movie_info["ids"]},
                         "progress": progress
                     })
-                    log(f"  playback: [{a.name}] -> [{b.name}] 同步电影进度: {movie_info.get('title')} ({progress}%)")
+                    count_synced += 1
+                    log(f"    ✓ 成功同步电影进度 [{movie_info.get('title')}] 到 [{b.name}]，进度: {progress}%")
                 except Exception as e:
-                    log(f"  playback 电影进度同步失败: {e}")
+                    log(f"    ❌ 同步电影进度 [{movie_info.get('title')}] 失败: {e}")
                     
         elif ptype == "episode" and "episode" in item:
             episode_info = item["episode"]
@@ -452,14 +515,18 @@ def sync_playback_progress(a: Trakt, b: Trakt, a_playback, b_playback):
                     if show_info:
                         payload["show"] = {"ids": show_info["ids"]}
                     b.post("/scrobble/pause", payload)
-                    log(f"  playback: [{a.name}] -> [{b.name}] 同步剧集进度: S{episode_info.get('season')}E{episode_info.get('number')} ({progress}%)")
+                    count_synced += 1
+                    show_title = show_info.get('title', '未知剧集') if show_info else '未知剧集'
+                    log(f"    ✓ 成功同步剧集进度 [{show_title} S{episode_info.get('season')}E{episode_info.get('number')}] 到 [{b.name}]，进度: {progress}%")
                 except Exception as e:
-                    log(f"  playback 剧集进度同步失败: {e}")
+                    log(f"    ❌ 同步剧集进度失败: {e}")
+    log(f"  [playback] 完成 [{a.name}] -> [{b.name}] 进度同步，共更新 {count_synced} 项。")
 
 
-# 同步隐藏项目 (Hidden Items)
+# 隐藏项目同步（带详细条目与状态日志）
 def sync_hidden_items(a: Trakt, b: Trakt, a_hidden, b_hidden):
-    for section in ["movies", "shows", "calendar"]:
+    log(f"  [hidden] 开始对齐 [{a.name}] -> [{b.name}] 的隐藏项目...")
+    for section in ["movies", "shows"]:
         a_list = a_hidden.get(section, [])
         b_list = b_hidden.get(section, [])
         
@@ -470,39 +537,51 @@ def sync_hidden_items(a: Trakt, b: Trakt, a_hidden, b_hidden):
             elif "show" in item and "ids" in item["show"]:
                 b_ids.add(item["show"]["ids"]["trakt"])
                 
-        to_hide_movies = []
-        to_hide_shows = []
+        count_hidden = 0
         for item in a_list:
-            if "movie" in item and "ids" in item["movie"]:
-                mid = item["movie"]["ids"]["trakt"]
+            if section == "movies" and "movie" in item and "ids" in item["movie"]:
+                movie_info = item["movie"]
+                mid = movie_info["ids"]["trakt"]
+                title = movie_info.get('title', '未知电影')
                 if mid not in b_ids:
-                    to_hide_movies.append({"ids": item["movie"]["ids"]})
-            elif "show" in item and "ids" in item["show"]:
-                sid = item["show"]["ids"]["trakt"]
+                    try:
+                        b.post("/users/hidden/movies", {"movies": [{"ids": movie_info["ids"]}]})
+                        count_hidden += 1
+                        log(f"    ✓ [hidden] 成功将电影 [{title}] 在 [{b.name}] 中同步隐藏")
+                    except Exception as e:
+                        log(f"    ❌ [hidden] 同步隐藏电影 [{title}] 失败: {e}")
+                        
+            elif section == "shows" and "show" in item and "ids" in item["show"]:
+                show_info = item["show"]
+                sid = show_info["ids"]["trakt"]
+                title = show_info.get('title', '未知剧集')
                 if sid not in b_ids:
-                    to_hide_shows.append({"ids": item["show"]["ids"]})
-                    
-        if to_hide_movies or to_hide_shows:
-            try:
-                b.post(f"/users/hidden/{section}", {"movies": to_hide_movies, "shows": to_hide_shows})
-                log(f"  hidden [{a.name}]->[{b.name}] ({section}): 同步隐藏了 {len(to_hide_movies)} 电影 / {len(to_hide_shows)} 剧集")
-            except Exception as e:
-                log(f"  hidden 同步失败 ({section}): {e}")
+                    try:
+                        b.post("/users/hidden/shows", {"shows": [{"ids": show_info["ids"]}]})
+                        count_hidden += 1
+                        log(f"    ✓ [hidden] 成功将剧集 [{title}] 在 [{b.name}] 中同步隐藏")
+                    except Exception as e:
+                        log(f"    ❌ [hidden] 同步隐藏剧集 [{title}] 失败: {e}")
+                        
+        if count_hidden > 0:
+            log(f"  [hidden] [{a.name}] -> [{b.name}] ({section}) 同步完成，共新增隐藏 {count_hidden} 项。")
 
 
-# 同步点赞的公共片单 (Liked Lists)
+# 点赞片单同步附带详细日志
 def sync_liked_lists(a: Trakt, b: Trakt, a_likes, b_likes):
     for slug, data in a_likes.items():
         if slug not in b_likes:
             info = data["info"]
             items = data["items"]
+            list_name = info.get('name', slug)
             try:
                 b.post(f"/users/likes/lists/{data['user']}/{slug}", {})
-                log(f"  likes: [{b.name}] 关注/点赞了来自 [{data['user']}] 的公共片单《{info.get('name', slug)}》")
-            except Exception:
+                log(f"  [likes] [成功] [{b.name}] 成功点赞/关注来自 [{data['user']}] 的公共片单《{list_name}》")
+            except Exception as like_err:
+                log(f"  [likes] ⚠️ 直接点赞片单《{list_name}》未成功，尝试在 [{b.name}] 创建镜像片单... 原因: {like_err}")
                 try:
                     created = b.post("/users/me/lists", {
-                        "name": info.get("name", slug),
+                        "name": list_name,
                         "description": info.get("description", "") or "",
                         "privacy": info.get("privacy", "private"),
                     })
@@ -511,71 +590,102 @@ def sync_liked_lists(a: Trakt, b: Trakt, a_likes, b_likes):
                     shows = [{"ids": x["show"]["ids"]} for x in items if x.get("type") == "show"]
                     if movies or shows:
                         b.post(f"/users/me/lists/{new_slug}/items", {"movies": movies, "shows": shows})
-                    log(f"  likes: [{b.name}] 镜像创建了点赞片单《{info.get('name', slug)}》")
+                    log(f"  [likes] [成功] 在 [{b.name}] 成功镜像创建点赞片单《{list_name}》（电影: {len(movies)}个 / 剧集: {len(shows)}部）")
                 except Exception as ex:
-                    log(f"  likes 镜像片单创建失败: {ex}")
+                    log(f"  [likes] [失败] 镜像创建点赞片单《{list_name}》彻底失败: {ex}")
 
 
 def sync_pair(a: Trakt, b: Trakt, a_data, b_data, cfg):
-    log(f"---------- 双向同步 [{a.name}] <=> [{b.name}] ----------")
+    log(f"---------- 开始双向同步: [{a.name}] <=> [{b.name}] ----------")
     sleep = cfg["request_sleep"]
 
+    # 1. 观看历史
     if cfg["sync_watched"]:
-        a_shows, a_movies = build_watched_index(a_data)
-        b_shows, b_movies = build_watched_index(b_data)
-        m_ab, s_ab = merge_watched_payload(a_shows, a_movies, b_shows, b_movies)
-        m_ba, s_ba = merge_watched_payload(b_shows, b_movies, a_shows, a_movies)
-        if m_ab or s_ab:
-            res = b.post("/sync/history", {"movies": m_ab, "shows": s_ab})
-            log(f"  watched [{a.name}]->[{b.name}]: 电影{len(m_ab)} 剧集{len(s_ab)} -> {res.get('added', {})}")
-        if m_ba or s_ba:
-            res = a.post("/sync/history", {"movies": m_ba, "shows": s_ba})
-            log(f"  watched [{b.name}]->[{a.name}]: 电影{len(m_ba)} 剧集{len(s_ba)} -> {res.get('added', {})}")
+        try:
+            a_shows, a_movies = build_watched_index(a_data)
+            b_shows, b_movies = build_watched_index(b_data)
+            m_ab, s_ab = merge_watched_payload(a_shows, a_movies, b_shows, b_movies)
+            m_ba, s_ba = merge_watched_payload(b_shows, b_movies, a_shows, a_movies)
+            if m_ab or s_ab:
+                res = b.post("/sync/history", {"movies": m_ab, "shows": s_ab})
+                log(f"  watched [{a.name}] -> [{b.name}]: 补入电影 {len(m_ab)}部, 剧集 {len(s_ab)}项 -> 响应: {res}")
+            else:
+                log(f"  watched [{a.name}] -> [{b.name}]: 无需补入")
+            
+            if m_ba or s_ba:
+                res = a.post("/sync/history", {"movies": m_ba, "shows": s_ba})
+                log(f"  watched [{b.name}] -> [{a.name}]: 补入电影 {len(m_ba)}部, 剧集 {len(s_ba)}项 -> 响应: {res}")
+            else:
+                log(f"  watched [{b.name}] -> [{a.name}]: 无需补入")
+        except Exception as e:
+            log(f"  ❌ watched 同步发生异常: {e}")
         time.sleep(sleep)
 
+    # 2. 评分
     if cfg["sync_ratings"]:
-        a_rs, a_rm = build_ratings_index(a_data)
-        b_rs, b_rm = build_ratings_index(b_data)
-        ab_movies = diff_ratings(a_rm, b_rm)
-        ab_shows = diff_ratings(a_rs, b_rs)
-        ba_movies = diff_ratings(b_rm, a_rm)
-        ba_shows = diff_ratings(b_rs, a_rs)
-        if ab_movies or ab_shows:
-            b.post("/sync/ratings", {"movies": ab_movies, "shows": ab_shows})
-        if ba_movies or ba_shows:
-            a.post("/sync/ratings", {"movies": ba_movies, "shows": ba_shows})
+        try:
+            a_rs, a_rm = build_ratings_index(a_data)
+            b_rs, b_rm = build_ratings_index(b_data)
+            ab_movies = diff_ratings(a_rm, b_rm)
+            ab_shows = diff_ratings(a_rs, b_rs)
+            ba_movies = diff_ratings(b_rm, a_rm)
+            ba_shows = diff_ratings(b_rs, a_rs)
+            if ab_movies or ab_shows:
+                res = b.post("/sync/ratings", {"movies": ab_movies, "shows": ab_shows})
+                log(f"  ratings [{a.name}] -> [{b.name}]: 同步评分 电影{len(ab_movies)} 剧集{len(ab_shows)} -> 响应: {res}")
+            if ba_movies or ba_shows:
+                res = a.post("/sync/ratings", {"movies": ba_movies, "shows": ba_shows})
+                log(f"  ratings [{b.name}] -> [{a.name}]: 同步评分 电影{len(ba_movies)} 剧集{len(ba_shows)} -> 响应: {res}")
+        except Exception as e:
+            log(f"  ❌ ratings 同步发生异常: {e}")
         time.sleep(sleep)
 
+    # 3. 追剧清单
     if cfg["sync_watchlist"]:
-        a_ws, a_wm = build_watchlist_index(a_data)
-        b_ws, b_wm = build_watchlist_index(b_data)
-        m_ab, s_ab = diff_watchlist(a_ws, a_wm, b_ws, b_wm)
-        m_ba, s_ba = diff_watchlist(b_ws, b_wm, a_ws, a_wm)
-        if m_ab or s_ab:
-            b.post("/sync/watchlist", {"movies": m_ab, "shows": s_ab})
-        if m_ba or s_ba:
-            a.post("/sync/watchlist", {"movies": m_ba, "shows": s_ba})
+        try:
+            a_ws, a_wm = build_watchlist_index(a_data)
+            b_ws, b_wm = build_watchlist_index(b_data)
+            m_ab, s_ab = diff_watchlist(a_ws, a_wm, b_ws, b_wm)
+            m_ba, s_ba = diff_watchlist(b_ws, b_wm, a_ws, a_wm)
+            if m_ab or s_ab:
+                res = b.post("/sync/watchlist", {"movies": m_ab, "shows": s_ab})
+                log(f"  watchlist [{a.name}] -> [{b.name}]: 补充清单 电影{len(m_ab)} 剧集{len(s_ab)} -> 响应: {res}")
+            if m_ba or s_ba:
+                res = a.post("/sync/watchlist", {"movies": m_ba, "shows": s_ba})
+                log(f"  watchlist [{b.name}] -> [{a.name}]: 补充清单 电影{len(m_ba)} 剧集{len(s_ba)} -> 响应: {res}")
+        except Exception as e:
+            log(f"  ❌ watchlist 同步发生异常: {e}")
         time.sleep(sleep)
 
+    # 4. 收藏
     if cfg.get("sync_collection"):
-        a_cs, a_cm = build_collection_index(a_data)
-        b_cs, b_cm = build_collection_index(b_data)
-        m_ab, s_ab = diff_collection(a_cs, a_cm, b_cs, b_cm)
-        m_ba, s_ba = diff_collection(b_cs, b_cm, a_cs, a_cm)
-        if m_ab or s_ab:
-            b.post("/sync/collection", {"movies": m_ab, "shows": s_ab})
-        if m_ba or s_ba:
-            a.post("/sync/collection", {"movies": m_ba, "shows": s_ba})
+        try:
+            a_cs, a_cm = build_collection_index(a_data)
+            b_cs, b_cm = build_collection_index(b_data)
+            m_ab, s_ab = diff_collection(a_cs, a_cm, b_cs, b_cm)
+            m_ba, s_ba = diff_collection(b_cs, b_cm, a_cs, a_cm)
+            if m_ab or s_ab:
+                res = b.post("/sync/collection", {"movies": m_ab, "shows": s_ab})
+                log(f"  collection [{a.name}] -> [{b.name}]: 补充收藏 电影{len(m_ab)} 剧集{len(s_ab)} -> 响应: {res}")
+            if m_ba or s_ba:
+                res = a.post("/sync/collection", {"movies": m_ba, "shows": s_ba})
+                log(f"  collection [{b.name}] -> [{a.name}]: 补充收藏 电影{len(m_ba)} 剧集{len(s_ba)} -> 响应: {res}")
+        except Exception as e:
+            log(f"  ❌ collection 同步发生异常: {e}")
         time.sleep(sleep)
 
+    # 5. 自定义片单
     if cfg.get("sync_lists"):
-        a_lists = a_data.get("lists_data", {})
-        b_lists = b_data.get("lists_data", {})
-        diff_lists(a_lists, b_lists, b)
-        diff_lists(b_lists, a_lists, a)
+        try:
+            a_lists = a_data.get("lists_data", {})
+            b_lists = b_data.get("lists_data", {})
+            diff_lists(a_lists, b_lists, b)
+            diff_lists(b_lists, a_lists, a)
+        except Exception as e:
+            log(f"  ❌ lists 同步发生异常: {e}")
         time.sleep(sleep)
 
-    # 执行播放进度双向对齐 (Continue Watching)
+    # 6. 播放进度 (继续观看)
     if cfg.get("sync_playback"):
         try:
             a_pb = a_data.get("playback", [])
@@ -583,31 +693,33 @@ def sync_pair(a: Trakt, b: Trakt, a_data, b_data, cfg):
             sync_playback_progress(a, b, a_pb, b_pb)
             sync_playback_progress(b, a, b_pb, a_pb)
         except Exception as e:
-            log(f"  playback 同步异常: {e}")
+            log(f"  ❌ playback 同步异常: {e}")
         time.sleep(sleep)
 
-    # 执行隐藏项目双向同步
+    # 7. 隐藏项目
     if cfg.get("sync_hidden"):
         try:
             sync_hidden_items(a, b, a_data.get("hidden", {}), b_data.get("hidden", {}))
             sync_hidden_items(b, a, b_data.get("hidden", {}), a_data.get("hidden", {}))
         except Exception as e:
-            log(f"  hidden 同步异常: {e}")
+            log(f"  ❌ hidden 同步异常: {e}")
         time.sleep(sleep)
 
-    # 执行点赞片单双向同步
+    # 8. 点赞片单
     if cfg.get("sync_likes"):
         try:
             sync_liked_lists(a, b, a_data.get("liked_lists", {}), b_data.get("liked_lists", {}))
             sync_liked_lists(b, a, b_data.get("liked_lists", {}), a_data.get("liked_lists", {}))
         except Exception as e:
-            log(f"  likes 同步异常: {e}")
+            log(f"  ❌ likes 同步异常: {e}")
         time.sleep(sleep)
+    
+    log(f"---------- 片段双向同步完成: [{a.name}] <=> [{b.name}] ----------")
 
 
 def run_sync(dry_run=False):
     if not SYNC_LOCK.acquire(blocking=False):
-        log("已有同步任务在运行，跳过本轮")
+        log("⚠️ 已有其他同步任务正在运行中，跳过本轮触发。")
         return
     try:
         LAST_SYNC_STATUS["running"] = True
@@ -617,35 +729,50 @@ def run_sync(dry_run=False):
 
         master_name = cfg["master_account"]
         slave_names = list(cfg["slave_accounts"])
-        if not master_name or master_name not in accounts:
-            log(f"主账号 {master_name} 未授权，请先在 Web 页面添加")
+        
+        if not master_name:
+            log("❌ 未指定主账号 (master_account)，请前往 Web 网页端配置并保存。")
+            return
+        if master_name not in accounts:
+            log(f"❌ 主账号 [{master_name}] 未在已授权账号列表中找到，请先完成该账号授权。")
             return
 
         clients = {master_name: Trakt(master_name, accounts[master_name])}
         for s in slave_names:
             if s in accounts:
                 clients[s] = Trakt(s, accounts[s])
+            else:
+                log(f"⚠️ 从账号 [{s}] 未找到授权记录，将被跳过。")
 
-        log(f"拉取 {len(clients)} 个账号数据 ...")
-        datas = {name: fetch_all(c, cfg) for name, c in clients.items()}
+        log(f"🚀 开始执行星型双向同步，当前有效客户端数量: {len(clients)} (主账号: {master_name}, 从账号: {slave_names})")
+        
+        # 拉取所有客户端数据
+        datas = {}
+        for name, c in clients.items():
+            try:
+                datas[name] = fetch_all(c, cfg)
+            except Exception as e:
+                log(f"❌ 拉取账号 [{name}] 的数据时发生严重异常: {e}")
+                datas[name] = {}
 
         master = clients[master_name]
         for sname in slave_names:
-            if sname not in clients:
-                log(f"跳过未授权账号 {sname}")
+            if sname not in clients or sname not in datas:
                 continue
             try:
                 sync_pair(master, clients[sname], datas[master_name], datas[sname], cfg)
             except Exception as e:
-                log(f"[{master_name}] <=> [{sname}] 失败: {e}")
-                LAST_SYNC_STATUS["last_error"] = str(e)
+                err_msg = f"[{master_name}] <=> [{sname}] 同步失败: {e}"
+                log(f"❌ {err_msg}")
+                LAST_SYNC_STATUS["last_error"] = err_msg
 
         save_accounts(accounts)
         LAST_SYNC_STATUS["last_run"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        log("本轮同步完成。")
+        log("🎉 本轮星型双向同步流程全部顺利结束。")
     except Exception as e:
-        LAST_SYNC_STATUS["last_error"] = str(e)
-        log(f"同步异常: {e}")
+        err_msg = f"同步过程发生全局异常: {e}"
+        LAST_SYNC_STATUS["last_error"] = err_msg
+        log(f"❌ {err_msg}")
     finally:
         LAST_SYNC_STATUS["running"] = False
         SYNC_LOCK.release()
