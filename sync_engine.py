@@ -4,7 +4,7 @@ import time
 import threading
 import requests
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import deque
 
 BASE = "https://api.trakt.tv"
@@ -18,11 +18,42 @@ LOG_LOCK = threading.Lock()
 SYNC_LOCK = threading.Lock()
 LAST_SYNC_STATUS = {"running": False, "last_run": None, "last_error": None}
 
+# 【新增】日志持久化存储目录
+LOG_DIR = DATA_DIR / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def clean_old_logs(days_to_keep=7):
+    """清理超过指定天数的旧日志文件"""
+    try:
+        now = datetime.now()
+        cutoff_date = now - timedelta(days=days_to_keep)
+        for log_file in LOG_DIR.glob("*.log"):
+            stem = log_file.stem
+            if len(stem) == 8 and stem.isdigit():
+                file_date = datetime.strptime(stem, "%Y%m%d")
+                if file_date < cutoff_date:
+                    log_file.unlink()
+                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 清理过期日志文件: {log_file.name}", flush=True)
+    except Exception as e:
+        print(f"清理旧日志异常: {e}", flush=True)
+
 
 def log(msg):
-    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+    now = datetime.now()
+    line = f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+    
     with LOG_LOCK:
         LOG_BUFFER.append(line)
+        # 【新增】按日期写入本地日志文件
+        try:
+            date_str = now.strftime("%Y%m%d")
+            daily_log_file = LOG_DIR / f"{date_str}.log"
+            with open(daily_log_file, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+
     print(line, flush=True)
 
 
@@ -30,6 +61,10 @@ def get_logs(since=0):
     with LOG_LOCK:
         items = list(LOG_BUFFER)
     return items[since:]
+
+
+# 每次程序启动时执行一次历史过期日志清理（默认保留7天）
+clean_old_logs(7)
 
 
 DEFAULT_CONFIG = {
@@ -150,7 +185,7 @@ class Trakt:
             "trakt-api-version": "2",
             "trakt-api-key": self.client_id,
             "Authorization": f"Bearer {self.access_token}",
-            "User-Agent": "Trakt-Multi-Sync/v2.0.3"
+            "User-Agent": "Trakt-Multi-Sync/v3.0.1"
         }
 
     def refresh(self):
@@ -198,8 +233,7 @@ class Trakt:
                     log(f"[{self.name}] ⚠️ 触发 Trakt API 频控限制 (429)，等待 {retry_after} 秒后重试...")
                     time.sleep(retry_after)
                     continue
-                
-                # 若遇到其他 4xx / 5xx 错误，记录详细的响应内容
+
                 if r.status_code >= 400:
                     log(f"[{self.name}] ⚠️ 请求 {path} 返回错误状态码 [{r.status_code}]: {r.text}")
 
@@ -307,7 +341,7 @@ def fetch_all(t: Trakt, cfg):
             log(f"[{t.name}] ❌ 获取播放进度失败: {e}")
             data["playback"] = []
 
-    # 7. 隐藏项目 (按 Trakt 官方文档的标准 section 拉取，支持分页上限)
+    # 7. 隐藏项目
     if cfg.get("sync_hidden"):
         hidden_data = {}
         total_hidden = 0
@@ -480,7 +514,7 @@ def diff_lists(src_lists_data, dst_lists_data, dst_client: Trakt):
                     log(f"  lists: [失败] 往片单《{name}》补入条目异常: {e}")
 
 
-# 播放进度双向对齐 (Continue Watching) 附带详细日志
+# 播放进度双向对齐 (Continue Watching)
 def sync_playback_progress(a: Trakt, b: Trakt, a_playback, b_playback):
     log(f"  [playback] 开始对齐 [{a.name}] -> [{b.name}] 的播放进度...")
     b_items = {}
@@ -533,7 +567,7 @@ def sync_playback_progress(a: Trakt, b: Trakt, a_playback, b_playback):
     log(f"  [playback] 完成 [{a.name}] -> [{b.name}] 进度同步，共更新 {count_synced} 项。")
 
 
-# 隐藏项目同步（使用官方标准 section 路径，带详细条目与响应日志）
+# 隐藏项目同步
 def sync_hidden_items(a: Trakt, b: Trakt, a_hidden, b_hidden):
     log(f"  [hidden] 开始对齐 [{a.name}] -> [{b.name}] 的隐藏项目...")
     total_synced = 0
@@ -583,7 +617,7 @@ def sync_hidden_items(a: Trakt, b: Trakt, a_hidden, b_hidden):
     log(f"  [hidden] 完成 [{a.name}] -> [{b.name}] 全部隐藏模块对齐，共新增隐藏 {total_synced} 项。")
 
 
-# 点赞片单同步附带详细日志
+# 点赞片单同步
 def sync_liked_lists(a: Trakt, b: Trakt, a_likes, b_likes):
     log(f"  [likes] 开始对齐 [{a.name}] -> [{b.name}] 的点赞片单...")
     count_liked = 0
@@ -780,8 +814,7 @@ def run_sync(dry_run=False):
                 log(f"⚠️ 从账号 [{s}] 未找到授权记录，将被跳过。")
 
         log(f"🚀 开始执行星型双向同步，当前有效客户端数量: {len(clients)} (主账号: {master_name}, 从账号: {slave_names})")
-        
-        # 拉取所有客户端数据
+
         datas = {}
         for name, c in clients.items():
             try:

@@ -23,27 +23,34 @@
 - Name: 随便填（如 `Trakt Multi Sync`）
 - Redirect uri: 填 `urn:ietf:wg:oauth:2.0:oob`
 - Save 后复制 **Client ID** 和 **Client Secret**
+- 所有账号共用 **Client ID** 和 **Client Secret**
 
 ### 2. 配置 docker-compose.yml
 
 ```yaml
 services:
   trakt-sync:
-    image: ghcr.io/<你的GitHub用户名>/trakt-multi-sync:latest
+    image: xigua0123/trakt-sync:latest
     container_name: trakt-sync
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
     volumes:
       - ./data:/app/data
+    ports:
+      - "8080:8080"
     environment:
       - TZ=Asia/Shanghai
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+    restart: unless-stopped
 ```
 
 ### 3. 启动
 
 ```bash
-mkdir trakt-multi-sync && cd trakt-multi-sync
+mkdir trakt-sync && cd trakt-sync
 mkdir data
 # 把上面的 docker-compose.yml 保存到当前目录
 docker compose up -d
@@ -61,9 +68,12 @@ docker compose up -d
    - 页面自动检测授权成功，账号列表刷新
    - 重复此步骤添加 B、C、D
 3. **同步配置** Tab：
-   - 主账号填 `A`
-   - 从账号填 `backup1,backup2`（逗号分隔）
+   - 勾选主账号 从账号 
    - 保存
+   - 修改管理后台 Token (可选)
+   - 修改自动同步间隔 (可选)
+   - 修改请求限速延迟 (可选)
+
 4. **同步与日志** Tab：点【立即跑一轮】，观察日志
 
 之后容器会按你设的间隔自动跑。
@@ -89,24 +99,6 @@ trakt-sync/
 | 观看历史 | 合并双方记录，保留各自 `watched_at`，补缺失的，不删除 |
 | 评分 | 冲突时按 `rated_at` 较新者覆盖（last-write-wins） |
 | Watchlist | 合并双方，补缺失的，不删除 |
-
-## 发版到 GitHub
-
-```bash
-git init
-git add .
-git commit -m "init"
-git branch -M main
-git remote add origin git@github.com:<你的用户名>/trakt-multi-sync.git
-git push -u origin main
-
-# 打 tag 触发镜像构建
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-GitHub Actions 会自动构建多架构镜像推到 `ghcr.io/<你的用户名>/trakt-multi-sync`。
-如果在仓库 Settings → Secrets 配置了 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，会同时推 Docker Hub。
 
 ## 数据文件（在 data/ 卷里）
 
