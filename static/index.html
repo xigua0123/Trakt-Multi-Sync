@@ -174,7 +174,6 @@
           <label><input type="checkbox" id="cfgWatchlist"> 同步追剧清单 (Watchlist)</label>
           <label><input type="checkbox" id="cfgCollection"> 同步收藏 (Collection)</label>
           <label><input type="checkbox" id="cfgLists"> 同步自定义片单 (Lists)</label>
-          <!-- 【新增的 3 项同步选项】 -->
           <label><input type="checkbox" id="cfgPlayback"> 同步播放进度 (Playback)</label>
           <label><input type="checkbox" id="cfgHidden"> 同步隐藏项目 (Hidden)</label>
           <label><input type="checkbox" id="cfgLikes"> 同步点赞片单 (Likes)</label>
@@ -185,6 +184,10 @@
         <input type="number" step="0.1" id="cfgSleep" placeholder="0.5">
       </div>
       <div class="form-group">
+        <label>日志保留天数 (天)</label>
+        <input type="number" id="cfgLogKeepDays" placeholder="7" min="1" max="365">
+      </div>
+      <div class="form-group full">
         <label>管理后台 Token (密码)</label>
         <input type="text" id="cfgToken" placeholder="admin">
       </div>
@@ -409,13 +412,13 @@ async function loadConfig() {
     document.getElementById('cfgWatchlist').checked = !!j.sync_watchlist;
     document.getElementById('cfgCollection').checked = !!j.sync_collection;
     document.getElementById('cfgLists').checked = !!j.sync_lists;
-    // 【加载新增的 3 项】
     document.getElementById('cfgPlayback').checked = !!j.sync_playback;
     document.getElementById('cfgHidden').checked = !!j.sync_hidden;
     document.getElementById('cfgLikes').checked = !!j.sync_likes;
 
     document.getElementById('cfgInterval').value = j.sync_interval || 1800;
     document.getElementById('cfgSleep').value = j.request_sleep || 0.5;
+    document.getElementById('cfgLogKeepDays').value = j.log_keep_days || 7;
     document.getElementById('cfgToken').value = j.admin_token || 'admin';
   } catch(e) {}
 }
@@ -434,13 +437,13 @@ async function saveConfig() {
       sync_watchlist: document.getElementById('cfgWatchlist').checked,
       sync_collection: document.getElementById('cfgCollection').checked,
       sync_lists: document.getElementById('cfgLists').checked,
-      // 【保存新增的 3 项】
       sync_playback: document.getElementById('cfgPlayback').checked,
       sync_hidden: document.getElementById('cfgHidden').checked,
       sync_likes: document.getElementById('cfgLikes').checked,
 
       sync_interval: parseInt(document.getElementById('cfgInterval').value) || 1800,
       request_sleep: parseFloat(document.getElementById('cfgSleep').value) || 0.5,
+      log_keep_days: parseInt(document.getElementById('cfgLogKeepDays').value) || 7,
       admin_token: document.getElementById('cfgToken').value.trim()
     };
 
@@ -490,6 +493,9 @@ async function pollStatusAndLogs() {
     const jLogs = await rLogs.json();
     if(jLogs.logs && jLogs.logs.length > 0) {
       const pre = document.getElementById('logPre');
+      if (pre.innerText.includes("正在加载日志...")) {
+        pre.innerText = "";
+      }
       pre.innerText += jLogs.logs.join("\n") + "\n";
       lastLogCount += jLogs.logs.length;
       pre.scrollTop = pre.scrollHeight;

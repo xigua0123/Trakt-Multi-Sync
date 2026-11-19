@@ -18,14 +18,17 @@ LOG_LOCK = threading.Lock()
 SYNC_LOCK = threading.Lock()
 LAST_SYNC_STATUS = {"running": False, "last_run": None, "last_error": None}
 
-# 【新增】日志持久化存储目录
+# 日志持久化存储目录
 LOG_DIR = DATA_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def clean_old_logs(days_to_keep=7):
-    """清理超过指定天数的旧日志文件"""
+def clean_old_logs():
+    """动态读取配置中指定的天数来清理旧日志文件"""
     try:
+        cfg = load_config()
+        days_to_keep = int(cfg.get("log_keep_days", 7))
+        
         now = datetime.now()
         cutoff_date = now - timedelta(days=days_to_keep)
         for log_file in LOG_DIR.glob("*.log"):
@@ -34,7 +37,7 @@ def clean_old_logs(days_to_keep=7):
                 file_date = datetime.strptime(stem, "%Y%m%d")
                 if file_date < cutoff_date:
                     log_file.unlink()
-                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 清理过期日志文件: {log_file.name}", flush=True)
+                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 清理超过 {days_to_keep} 天的过期日志文件: {log_file.name}", flush=True)
     except Exception as e:
         print(f"清理旧日志异常: {e}", flush=True)
 
@@ -45,7 +48,7 @@ def log(msg):
     
     with LOG_LOCK:
         LOG_BUFFER.append(line)
-        # 【新增】按日期写入本地日志文件
+        # 按日期实时写入本地日志文件 (格式: YYYYMMDD.log)
         try:
             date_str = now.strftime("%Y%m%d")
             daily_log_file = LOG_DIR / f"{date_str}.log"
@@ -63,8 +66,8 @@ def get_logs(since=0):
     return items[since:]
 
 
-# 每次程序启动时执行一次历史过期日志清理（默认保留7天）
-clean_old_logs(7)
+# 每次程序启动时执行一次历史过期日志清理
+clean_old_logs()
 
 
 DEFAULT_CONFIG = {
@@ -80,6 +83,7 @@ DEFAULT_CONFIG = {
     "sync_likes": True,        # 点赞片单同步
     "sync_interval": 1800,
     "request_sleep": 0.5,
+    "log_keep_days": 7,        # 日志保留天数 (可自定义)
     "public_url": "http://localhost:8080",
     "admin_token": "admin",
     "password_changed": False,
@@ -185,7 +189,7 @@ class Trakt:
             "trakt-api-version": "2",
             "trakt-api-key": self.client_id,
             "Authorization": f"Bearer {self.access_token}",
-            "User-Agent": "Trakt-Multi-Sync/v3.0.1"
+            "User-Agent": "Trakt-Multi-Sync/v3.0.2"
         }
 
     def refresh(self):
@@ -303,7 +307,7 @@ def fetch_all(t: Trakt, cfg):
             data["watchlist_shows"], data["watchlist_movies"] = [], []
         time.sleep(sleep)
 
-    # 4. 收藏
+    # 4. 收藏库
     if cfg.get("sync_collection"):
         try:
             data["collection_shows"] = t.get("/sync/collection/shows")
@@ -341,7 +345,7 @@ def fetch_all(t: Trakt, cfg):
             log(f"[{t.name}] ❌ 获取播放进度失败: {e}")
             data["playback"] = []
 
-    # 7. 隐藏项目
+    # 7. 隐藏项目 (Trakt 官方标准模块)
     if cfg.get("sync_hidden"):
         hidden_data = {}
         total_hidden = 0
@@ -722,7 +726,7 @@ def sync_pair(a: Trakt, b: Trakt, a_data, b_data, cfg):
             log(f"  ❌ watchlist 同步发生异常: {e}")
         time.sleep(sleep)
 
-    # 4. 收藏
+    # 4. 收藏库
     if cfg.get("sync_collection"):
         try:
             a_cs, a_cm = build_collection_index(a_data)
@@ -793,6 +797,10 @@ def run_sync(dry_run=False):
     try:
         LAST_SYNC_STATUS["running"] = True
         LAST_SYNC_STATUS["last_error"] = None
+        
+        # 每次运行同步时顺便执行一次过期日志清理检查
+        clean_old_logs()
+        
         cfg = load_config()
         accounts = load_accounts()
 
