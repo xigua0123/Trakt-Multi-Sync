@@ -2,15 +2,15 @@ import json
 import time
 import asyncio
 from pathlib import Path
-from typing import Dict, Any
-from fastapi import FastAPI, Request, Form, Response, Cookie, HTTPException
+from typing import Optional
+from fastapi import FastAPI, Request, Form, Response, Cookie, Header, HTTPException, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import requests
 import sync_engine as se
 from apscheduler.schedulers.background import BackgroundScheduler
 
-app = FastAPI(title="Trakt Multi Sync", version="3.0.1")
+app = FastAPI(title="Trakt Multi Sync", version="v3.1.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 DATA_DIR = Path("./data")
@@ -19,6 +19,9 @@ ACCOUNT_PATH = DATA_DIR / "accounts.json"
 
 # Device Code 临时存储池：device_code -> session info
 device_sessions = {}
+
+# 登录 Cookie 有效期：半小时（1800 秒）
+COOKIE_MAX_AGE = 30 * 60
 
 
 def load_accounts() -> dict:
@@ -100,32 +103,68 @@ scheduler.start()
 # =========================================================================
 
 
+def _extract_token(admin_token: Optional[str], authorization: Optional[str]) -> Optional[str]:
+    if admin_token:
+        return admin_token.strip()
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return None
+
+
+# ==================== 统一鉴权依赖函数 (安全加固核心) ====================
+def verify_admin(
+    admin_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None)
+):
+    """校验客户端请求是否携带了合法的管理员 Cookie 或 Bearer Token"""
+    cfg = se.load_config()
+    expected = str(cfg.get("admin_token", "admin")).strip()
+    token = _extract_token(admin_token, authorization)
+    if not token or token != expected:
+        raise HTTPException(status_code=401, detail="未授权访问，请先登录")
+    return True
+# =========================================================================
+
+
 # ==================== 登录鉴权相关接口 ====================
 @app.get("/api/me")
-async def api_me(admin_token: str = Cookie(default=None)):
+async def api_me(
+    admin_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None)
+):
     cfg = se.load_config()
-    expected = cfg.get("admin_token", "admin")
-    if admin_token and admin_token == expected:
+    expected = str(cfg.get("admin_token", "admin")).strip()
+    token = _extract_token(admin_token, authorization)
+    if token and token == expected:
         return JSONResponse({"logged_in": True})
     return JSONResponse({"logged_in": False}, status_code=401)
+
 
 @app.post("/api/login")
 async def api_login(request: Request, response: Response):
     try:
         body = await request.json()
-        pwd = body.get("password", "")
+        pwd = str(body.get("password", "")).strip()
         cfg = se.load_config()
-        expected = cfg.get("admin_token", "admin")
-        if pwd == expected:
-            response.set_cookie(key="admin_token", value=expected, httponly=True)
-            return JSONResponse({"ok": True})
+        expected = str(cfg.get("admin_token", "admin")).strip()
+        if pwd and pwd == expected:
+            response.set_cookie(
+                key="admin_token",
+                value=expected,
+                path="/",
+                httponly=True,
+                max_age=COOKIE_MAX_AGE,
+                samesite="lax"
+            )
+            return JSONResponse({"ok": True, "token": expected})
         return JSONResponse({"ok": False, "msg": "密码错误"}, status_code=401)
     except Exception as e:
         return JSONResponse({"ok": False, "msg": str(e)}, status_code=400)
 
+
 @app.post("/api/logout")
 async def api_logout(response: Response):
-    response.delete_cookie(key="admin_token")
+    response.delete_cookie(key="admin_token", path="/")
     return JSONResponse({"ok": True})
 # =========================================================================
 
@@ -140,19 +179,21 @@ async def index():
     return html
 
 
+# ==================== 受保护的后台管理 API 接口 ====================
+
 @app.get("/api/status")
-async def api_status():
+async def api_status(auth: bool = Depends(verify_admin)):
     return JSONResponse({"running": se.LAST_SYNC_STATUS["running"]})
 
 
 @app.get("/api/logs")
-async def api_logs(since: int = 0):
+async def api_logs(since: int = 0, auth: bool = Depends(verify_admin)):
     lines = se.get_logs(since)
     return JSONResponse({"logs": lines, "total": len(se.LOG_BUFFER)})
 
 
 @app.post("/api/start_sync")
-async def api_start_sync():
+async def api_start_sync(auth: bool = Depends(verify_admin)):
     if se.LAST_SYNC_STATUS["running"]:
         return JSONResponse({"ok": False, "msg": "同步正在运行中，请勿重复触发"})
     asyncio.create_task(sync_task())
@@ -161,7 +202,12 @@ async def api_start_sync():
 
 # ---------- 统一走 PIN（Device Code）授权接口 ----------
 @app.post("/api/oauth/device/start")
-async def api_oauth_device_start(remark: str = Form(...), client_id: str = Form(...), client_secret: str = Form("")):
+async def api_oauth_device_start(
+    remark: str = Form(...), 
+    client_id: str = Form(...), 
+    client_secret: str = Form(""),
+    auth: bool = Depends(verify_admin)
+):
     remark = remark.strip()
     client_id = client_id.strip()
     client_secret = client_secret.strip()
@@ -172,7 +218,7 @@ async def api_oauth_device_start(remark: str = Form(...), client_id: str = Form(
     headers_base = {
         "trakt-api-version": "2",
         "trakt-api-key": client_id,
-        "User-Agent": "Trakt Multi Sync/3.0.1"
+        "User-Agent": "Trakt Multi Sync/v3.1.0"
     }
     dev_payload = {"client_id": client_id}
     if client_secret:
@@ -211,7 +257,7 @@ async def api_oauth_device_start(remark: str = Form(...), client_id: str = Form(
 
 
 @app.get("/api/oauth/device/poll")
-async def api_oauth_device_poll(device_code: str):
+async def api_oauth_device_poll(device_code: str, auth: bool = Depends(verify_admin)):
     sess = device_sessions.get(device_code)
     if not sess:
         return JSONResponse({"status": "cancelled"})
@@ -237,7 +283,7 @@ async def api_oauth_device_poll(device_code: str):
         "Content-Type": "application/json",
         "trakt-api-version": "2",
         "trakt-api-key": client_id,
-        "User-Agent": "Trakt Multi Sync/3.0.1"
+        "User-Agent": "Trakt Multi Sync/v3.1.0"
     }
 
     try:
@@ -296,7 +342,7 @@ async def api_oauth_device_poll(device_code: str):
 
 
 @app.get("/api/list_accounts")
-async def api_list_accounts():
+async def api_list_accounts(auth: bool = Depends(verify_admin)):
     accs = load_accounts()
     out = []
     for name, a in accs.items():
@@ -313,7 +359,7 @@ async def api_list_accounts():
 
 
 @app.post("/api/del_account")
-async def api_del_account(remark: str = Form(...)):
+async def api_del_account(remark: str = Form(...), auth: bool = Depends(verify_admin)):
     accs = load_accounts()
     if remark in accs:
         del accs[remark]
@@ -323,19 +369,19 @@ async def api_del_account(remark: str = Form(...)):
 
 
 @app.get("/api/config")
-async def api_get_config():
+async def api_get_config(auth: bool = Depends(verify_admin)):
     return JSONResponse(se.load_config())
 
 
 @app.post("/api/config")
-async def api_set_config(request: Request):
+async def api_set_config(request: Request, auth: bool = Depends(verify_admin)):
     try:
         body = await request.json()
         cfg = se.load_config()
         cfg.update(body)
         se.save_config(cfg)
         
-        # 【核心新增】当用户在后台修改并保存配置时，立刻动态重置 APScheduler 定时任务间隔
+        # 当用户在后台修改并保存配置时，立刻动态重置 APScheduler 定时任务间隔
         setup_scheduler()
         
         se.log("同步配置已更新并成功刷新定时任务")

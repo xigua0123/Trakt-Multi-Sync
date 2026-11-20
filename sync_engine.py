@@ -23,25 +23,6 @@ LOG_DIR = DATA_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def clean_old_logs():
-    """动态读取配置中指定的天数来清理旧日志文件"""
-    try:
-        cfg = load_config()
-        days_to_keep = int(cfg.get("log_keep_days", 7))
-        
-        now = datetime.now()
-        cutoff_date = now - timedelta(days=days_to_keep)
-        for log_file in LOG_DIR.glob("*.log"):
-            stem = log_file.stem
-            if len(stem) == 8 and stem.isdigit():
-                file_date = datetime.strptime(stem, "%Y%m%d")
-                if file_date < cutoff_date:
-                    log_file.unlink()
-                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 清理超过 {days_to_keep} 天的过期日志文件: {log_file.name}", flush=True)
-    except Exception as e:
-        print(f"清理旧日志异常: {e}", flush=True)
-
-
 def log(msg):
     now = datetime.now()
     line = f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
@@ -64,10 +45,6 @@ def get_logs(since=0):
     with LOG_LOCK:
         items = list(LOG_BUFFER)
     return items[since:]
-
-
-# 每次程序启动时执行一次历史过期日志清理
-clean_old_logs()
 
 
 DEFAULT_CONFIG = {
@@ -108,6 +85,29 @@ def save_config(cfg):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
+
+
+def clean_old_logs():
+    """动态读取配置中指定的天数来清理旧日志文件"""
+    try:
+        cfg = load_config()
+        days_to_keep = int(cfg.get("log_keep_days", 7))
+        
+        now = datetime.now()
+        cutoff_date = now - timedelta(days=days_to_keep)
+        for log_file in LOG_DIR.glob("*.log"):
+            stem = log_file.stem
+            if len(stem) == 8 and stem.isdigit():
+                file_date = datetime.strptime(stem, "%Y%m%d")
+                if file_date < cutoff_date:
+                    log_file.unlink()
+                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 清理超过 {days_to_keep} 天的过期日志文件: {log_file.name}", flush=True)
+    except Exception as e:
+        print(f"清理旧日志异常: {e}", flush=True)
+
+
+# 必须在 load_config 定义之后再调用启动清理
+clean_old_logs()
 
 
 def load_accounts():
@@ -189,7 +189,7 @@ class Trakt:
             "trakt-api-version": "2",
             "trakt-api-key": self.client_id,
             "Authorization": f"Bearer {self.access_token}",
-            "User-Agent": "Trakt-Multi-Sync/v3.0.2"
+            "User-Agent": "Trakt-Multi-Sync/v3.1.0"
         }
 
     def refresh(self):

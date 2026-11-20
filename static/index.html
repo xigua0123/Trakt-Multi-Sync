@@ -118,7 +118,7 @@
       </tbody>
     </table>
     <div style="font-size: 12px; color: #666; margin-bottom: 30px;">
-      提示: 在 <a href="https://trakt.tv/oauth/applications" target="_blank" style="color: #1a73e8;">Trakt Applications</a> 为主账号创建一个 App后面所有账号用同一个Client ID，Redirect URI 填 <code>urn:ietf:params:oauth:2.0:oob</code> 或 <code>http://localhost:8080</code>
+      提示: 在 <a href="https://trakt.tv/oauth/applications" target="_blank" style="color: #1a73e8;">Trakt Applications</a> 为主账号创建一个 App 后面所有账号可用同一个 Client ID，Redirect URI 填 <code>urn:ietf:params:oauth:2.0:oob</code> 或 <code>http://localhost:8080</code>
     </div>
 
     <h3>添加 / 重新授权账号</h3>
@@ -213,9 +213,33 @@ let lastLogCount = 0;
 let globalConfigCache = {};
 let availableAccounts = [];
 
+function getAuthToken() {
+  return localStorage.getItem('trakt_admin_token') || '';
+}
+
+function setAuthToken(tok) {
+  if (tok) localStorage.setItem('trakt_admin_token', tok);
+  else localStorage.removeItem('trakt_admin_token');
+}
+
+async function authFetch(url, options = {}) {
+  const opts = { ...options };
+  opts.headers = { ...(options.headers || {}) };
+  const tok = getAuthToken();
+  if (tok && !opts.headers['Authorization']) {
+    opts.headers['Authorization'] = `Bearer ${tok}`;
+  }
+  const r = await fetch(url, opts);
+  if (r.status === 401) {
+    setAuthToken('');
+    document.getElementById('loginOverlay').style.display = 'flex';
+  }
+  return r;
+}
+
 async function checkAuth() {
   try {
-    const r = await fetch('/api/me');
+    const r = await authFetch('/api/me');
     if (!r.ok) {
       document.getElementById('loginOverlay').style.display = 'flex';
     } else {
@@ -238,6 +262,7 @@ async function doLogin() {
     });
     const j = await r.json();
     if (j.ok) {
+      setAuthToken(j.token || pwd.trim());
       errDiv.style.display = 'none';
       document.getElementById('loginOverlay').style.display = 'none';
       document.getElementById('loginPwd').value = '';
@@ -251,7 +276,8 @@ async function doLogin() {
 }
 
 async function doLogout() {
-  await fetch('/api/logout', {method: 'POST'});
+  await authFetch('/api/logout', {method: 'POST'});
+  setAuthToken('');
   location.reload();
 }
 
@@ -264,8 +290,8 @@ function switchTab(idx) {
 
 async function loadAccounts() {
   try {
-    const r = await fetch('/api/list_accounts');
-    if (r.status === 401) { checkAuth(); return; }
+    const r = await authFetch('/api/list_accounts');
+    if (!r.ok) return;
     const j = await r.json();
     availableAccounts = j.accounts || [];
     
@@ -341,8 +367,8 @@ async function startAuth() {
   fd.append("client_id", client_id);
   fd.append("client_secret", client_secret);
 
-  const r = await fetch('/api/oauth/device/start', {method: 'POST', body: fd});
-  if (r.status === 401) { checkAuth(); return; }
+  const r = await authFetch('/api/oauth/device/start', {method: 'POST', body: fd});
+  if (!r.ok) return;
   const j = await r.json();
   if(j.ok) {
     currentDeviceCode = j.device_code;
@@ -362,8 +388,8 @@ async function startAuth() {
 async function pollToken() {
   if(!currentDeviceCode) return;
   try {
-    const r = await fetch(`/api/oauth/device/poll?device_code=${encodeURIComponent(currentDeviceCode)}`);
-    if (r.status === 401) { checkAuth(); return; }
+    const r = await authFetch(`/api/oauth/device/poll?device_code=${encodeURIComponent(currentDeviceCode)}`);
+    if (!r.ok) return;
     const j = await r.json();
     if(j.status === "authorized") {
       clearInterval(pollTimer);
@@ -393,15 +419,15 @@ async function delAccount(remark) {
   if(!confirm(`确定删除账号 ${remark} 吗？`)) return;
   const fd = new FormData();
   fd.append("remark", remark);
-  const r = await fetch('/api/del_account', {method: 'POST', body: fd});
-  if (r.status === 401) { checkAuth(); return; }
+  const r = await authFetch('/api/del_account', {method: 'POST', body: fd});
+  if (!r.ok) return;
   loadAccounts();
 }
 
 async function loadConfig() {
   try {
-    const r = await fetch('/api/config');
-    if (r.status === 401) { checkAuth(); return; }
+    const r = await authFetch('/api/config');
+    if (!r.ok) return;
     const j = await r.json();
     globalConfigCache = j;
     
@@ -427,6 +453,7 @@ async function saveConfig() {
   try {
     const slaveCheckboxes = document.querySelectorAll('input[name="slave_account_cb"]:checked');
     const slave_accounts = Array.from(slaveCheckboxes).map(cb => cb.value);
+    const newToken = document.getElementById('cfgToken').value.trim();
 
     const newCfg = {
       ...globalConfigCache,
@@ -444,17 +471,18 @@ async function saveConfig() {
       sync_interval: parseInt(document.getElementById('cfgInterval').value) || 1800,
       request_sleep: parseFloat(document.getElementById('cfgSleep').value) || 0.5,
       log_keep_days: parseInt(document.getElementById('cfgLogKeepDays').value) || 7,
-      admin_token: document.getElementById('cfgToken').value.trim()
+      admin_token: newToken
     };
 
-    const r = await fetch('/api/config', {
+    const r = await authFetch('/api/config', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(newCfg)
     });
-    if (r.status === 401) { checkAuth(); return; }
+    if (!r.ok) return;
     const j = await r.json();
     if(j.ok) {
+      if (newToken) setAuthToken(newToken);
       alert("配置保存成功！");
       loadConfig();
     } else {
@@ -466,14 +494,13 @@ async function saveConfig() {
 }
 
 async function triggerSync() {
-  const r = await fetch('/api/start_sync', {method: 'POST'});
-  if (r.status === 401) { checkAuth(); }
+  await authFetch('/api/start_sync', {method: 'POST'});
 }
 
 async function pollStatusAndLogs() {
   try {
-    const rStatus = await fetch('/api/status');
-    if (rStatus.status === 401) { checkAuth(); return; }
+    const rStatus = await authFetch('/api/status');
+    if (!rStatus.ok) return;
     const jStatus = await rStatus.json();
     const dot = document.getElementById('statusDot');
     const txt = document.getElementById('statusText');
@@ -488,8 +515,8 @@ async function pollStatusAndLogs() {
       btn.disabled = false;
     }
 
-    const rLogs = await fetch(`/api/logs?since=${lastLogCount}`);
-    if (rLogs.status === 401) { checkAuth(); return; }
+    const rLogs = await authFetch(`/api/logs?since=${lastLogCount}`);
+    if (!rLogs.ok) return;
     const jLogs = await rLogs.json();
     if(jLogs.logs && jLogs.logs.length > 0) {
       const pre = document.getElementById('logPre');
